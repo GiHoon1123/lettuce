@@ -59,6 +59,62 @@ reactive.observeChannels().doOnNext(patternMessage -> {...}).subscribe()
 // application flow continues
 ```
 
+### Kotlin coroutines
+
+Pub/Sub connections provide a coroutine API through
+`io.lettuce.core.pubsub.coroutines`. This API requires the same coroutine
+dependencies as the [Kotlin API](kotlin-api.md) and opt-in to
+`ExperimentalLettuceCoroutinesApi`.
+
+```kotlin
+import io.lettuce.core.ExperimentalLettuceCoroutinesApi
+import io.lettuce.core.RedisClient
+import io.lettuce.core.api.coroutines
+import io.lettuce.core.pubsub.coroutines
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
+
+@OptIn(ExperimentalLettuceCoroutinesApi::class)
+suspend fun receiveMessage(client: RedisClient) = coroutineScope {
+    client.connectPubSub().use { subscription ->
+        client.connect().use { publisher ->
+            val commands = subscription.coroutines()
+            val received = async(start = CoroutineStart.UNDISPATCHED) {
+                commands.observeChannels().first()
+            }
+
+            commands.subscribe("events")
+            publisher.coroutines().publish("events", "hello")
+            println(received.await().message)
+            commands.unsubscribe("events")
+        }
+    }
+}
+```
+
+Start collecting before registering subscriptions so that the message listener
+is ready when messages arrive. The subscription functions suspend until Redis
+acknowledges the registration; they do not return the messages themselves.
+
+Use `psubscribe` with `observePatterns` for pattern subscriptions, and
+`ssubscribe` with `observeShardChannels` for shard subscriptions (Redis 7.0+).
+On Redis Cluster, shard channels in a single subscription command must share a
+hash slot. The basic Pub/Sub API also accepts cluster Pub/Sub connections;
+cluster node-selection operations remain available through the Java APIs.
+
+Each collector owns a separate listener. Cancelling a collector removes that
+listener, but does not unsubscribe other collectors or close the connection.
+Use `unsubscribe`, `punsubscribe`, or `sunsubscribe` to unregister server
+subscriptions. Use a separate publishing connection as shown above, since
+RESP2 restricts the commands allowed on a subscribed connection.
+
+Message flows use the reactive API's unbounded `BUFFER` overflow strategy by
+default. Pass another `FluxSink.OverflowStrategy`, such as `ERROR`, `DROP`, or
+`LATEST`, to control behavior when messages arrive faster than they are consumed.
+Calling `buffer` on the Flow alone does not bound the reactive buffer.
+
 ### Redis Cluster
 
 Redis Cluster support Publish/Subscribe but requires some attention in
